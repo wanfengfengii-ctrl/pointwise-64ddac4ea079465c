@@ -6,10 +6,14 @@ Python 3.11 标准库与 SQLite 实现的离线目录采集系统，供青岚研
 
 ```sh
 python3.11 -B -m unittest discover -s tests -v
+python3.11 -B -m tools.run_verify
 python3.11 -B -m tools.verify_demo
+python3.11 -B -m directory.source.events --self-check
 ```
 
-运行清单为 .pointwise-runtime.json。demo 在自身临时目录中真实导入两份样例，计算部门名单、导出旧成果、比较差异并关闭重开核账；不修改样例。测试只写测试临时目录或内存数据库。
+`tools.run_verify` 先完整执行原 unittest discover，再运行 SYNC 联合核验，业务失败非零退出。串行来源刷新契约见 SYNC.md：`directory.source.sync.SyncCollector` 按 UUID 合并完整条目，刷新结束与检查点把完整目录和不透明 cookie 在同一 SQLite 提交中发布。
+
+运行清单为 .pointwise-runtime.json。demo 在自身临时目录中真实导入两份样例，计算部门名单、导出旧成果、比较差异并关闭重开核账；随后演示 present 属性保留、DN 名称交换和断开后按已提交 cookie 续采；不修改样例。测试只写测试临时目录或内存数据库。
 
 ## 一天的工作
 

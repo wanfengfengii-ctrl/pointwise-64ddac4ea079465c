@@ -56,3 +56,10 @@ UUID 为对象身份，DN 为可变名称；刷新期间允许暂时重名及名
 现有 `.pointwise-runtime.json` 的格式见其内容：保留 version=1、kind=cli、setup 为 argv 数组列表、verify/demo 为各自 argv 数组。实现后更新 verify，使它保留完整原 unittest discover 并执行新增联合核验，业务失败须非零退出；demo 保留原真实导入展示并增加属性保留、名称交换及断开后从已提交 cookie 重新开源的真实结果。可用现有脚本组织入口，不新增独立产品。补简短状态归属及共同提交不变量说明，可放在本文件。
 
 原回归命令为 `python3.11 -B -m unittest discover -s tests -v`，原展示为 `python3.11 -B -m tools.verify_demo`；新增纯夹具自检为 `python3.11 -B -m directory.source.events --self-check`。夹具自检只核对 V1 回滚与样例数据，不表示 SyncCollector 已实现或通过。
+
+## 实现状态与共同提交不变量
+
+- 状态归属：串行裁决、UUID 合并、present/delete 语义、阶段机与失败毒化归 `directory/source/sync.py`；不透明 cookie、内部来源标签、发布序号及重开装载归 `directory-sync` 表（`directory/source/sync_store.py`，`sync_sources`）；部门投影、规范条目、固定读取和按 DN 历史仍由 V1 模块计算与持有。联合核验归 `tests/test_sync.py` 与 `tools/run_verify.py`，演示扩展归 `tools/verify_demo.py`。
+- 共同提交不变量：`refresh_done` 与持续阶段 `checkpoint` 各自只开启一个 SQLite 事务，完整成果（snapshots/entries/departments/members、当前指针）与该 cookie 在同一次 COMMIT 生效；内容无变化的 checkpoint 仅在同一事务更新 `sync_sources.cookie`，不新建成果。任一回滚后无开放事务，目录、成员、历史与 cookie 回到调用前状态，可经 `reject_commit` 与关闭重开核验。
+- 边界内不实现：网络协议、BER/认证、并行采集者、跨来源融合、自动重连与故障注入生产 API；断开后的半轮刷新不恢复，重开只基于已提交目录和 cookie。
+

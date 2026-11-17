@@ -4,6 +4,134 @@ import json
 import tempfile
 from pathlib import Path
 from directory.workflow.api import DirectoryAPI
+from directory.archive.schema import ArchiveDatabase
+from directory.source import events as ev
+from directory.source.events import (ScriptedSource, begin, entry, present,
+                                      refresh_done, checkpoint,
+                                      sample_scripts, seed_records)
+from directory.source.sync import SyncCollector
+
+
+def _drive(collector, script):
+    for event in ScriptedSource(script).open(collector.resume_cookie()):
+        collector.accept(event)
+
+
+def sync_demo(folder):
+    """Real LDAP-style refresh scenarios on a fresh seeded SQLite library."""
+    U, V = ev.U, ev.V
+
+    # Scenario 1: present refresh proves existence; full attributes and the
+    # department assignment survive even though only UUIDs were reasserted.
+    path = Path(folder) / "sync-presence.db"
+    with DirectoryAPI(path) as api:
+        api.import_snapshot("seed", seed_records())
+        collector = SyncCollector(api.runtime.database, "lab-ldap")
+        _drive(collector, sample_scripts()["presence"])
+        kept = collector.read()
+        assert dict(kept[0].attributes)["x"] == ("1",)
+        assert kept[0].department_path == ("A",)
+        bound = api.bind_snapshot()
+        downstream = [e.dn for e in api.members(bound, ["A"])]
+        print("POINTWISE_SCENARIO " + json.dumps({
+            "case_id": "sync-presence",
+            "input": {"events": [e.kind for e in sample_scripts()["presence"]]},
+            "expected": {"survivors": [U], "x": ["1"], "department": ["A"],
+                         "cookie": "present-done"},
+            "actual": {"survivors": [e.uuid for e in kept],
+                       "x": list(dict(kept[0].attributes)["x"]),
+                       "department": list(kept[0].department_path),
+                       "cookie": collector.resume_cookie().decode()},
+            "downstream_expected": ["cn=a"], "downstream_actual": downstream,
+            "code_paths": ["directory/source/sync.py",
+                           "directory/source/sync_store.py",
+                           "directory/delivery/filter.py"],
+            "oracle": "present only proves UUID; complete seed content is merged by UUID"},
+            ensure_ascii=False))
+
+    # Scenario 2: a DN swap between two UUIDs. Mid-swap readers keep the old
+    # directory; only refresh_done publishes the exchanged names together.
+    path = Path(folder) / "sync-swap.db"
+    with DirectoryAPI(path) as api:
+        api.import_snapshot("seed", seed_records())
+        collector = SyncCollector(api.runtime.database, "lab-ldap")
+        collector.accept(begin("present"))
+        collector.accept(entry(U, "CN=b",
+                               {"objectUUID": [U], "x": ["2"]}, ["B"]))
+        mid_swap = [e.dn for e in collector.read()]
+        _drive(collector, sample_scripts()["swap"][2:])
+        swapped = {e.uuid: e for e in collector.read()}
+        assert mid_swap == ["cn=a", "cn=b"]
+        assert (swapped[U].dn, swapped[V].dn) == ("cn=b", "cn=a")
+        print("POINTWISE_SCENARIO " + json.dumps({
+            "case_id": "sync-name-swap",
+            "input": {"events": [e.kind for e in sample_scripts()["swap"]]},
+            "expected": {"mid_swap_names": ["cn=a", "cn=b"],
+                         "final": {U: "cn=b", V: "cn=a"},
+                         "cookie": "swap-done"},
+            "actual": {"mid_swap_names": mid_swap,
+                       "final": {U: swapped[U].dn, V: swapped[V].dn},
+                       "cookie": collector.resume_cookie().decode()},
+            "downstream_expected": {"A": ["cn=a"], "B": ["cn=b"]},
+            "downstream_actual": {
+                "A": [e.dn for e in api.members(api.bind_snapshot(), ["A"])],
+                "B": [e.dn for e in api.members(api.bind_snapshot(), ["B"])]},
+            "code_paths": ["directory/source/sync.py",
+                           "directory/membership/projection.py",
+                           "directory/archive/snapshots.py"],
+            "oracle": "UUID is identity, DN is a mutable name; uniqueness checked at done"},
+            ensure_ascii=False))
+
+    # Scenario 3: the source stops mid-refresh; disconnect discards the work.
+    # Reopening resumes from the last committed cookie and finishes the run.
+    path = Path(folder) / "sync-resume.db"
+    with DirectoryAPI(path) as api:
+        api.import_snapshot("seed", seed_records())
+        collector = SyncCollector(api.runtime.database, "lab-ldap")
+        collector.accept(begin("present"))
+        collector.accept(present(U))
+        collector.accept(present(V))
+        collector.accept(refresh_done(b"cursor-1"))
+        collector.accept(checkpoint(b"cursor-2"))
+        committed_cookie = collector.resume_cookie()
+        # A new connection starts, then the source stops before refresh_done.
+        collector.disconnect()
+        port = ScriptedSource([begin("present"), present(U),
+                               checkpoint(b"never-committed")], stop_at=3)
+        for event in port.open(collector.resume_cookie()):
+            collector.accept(event)
+        collector.disconnect()
+    db = ArchiveDatabase(path)
+    resumed = SyncCollector(db, "lab-ldap")
+    assert resumed.resume_cookie() == committed_cookie
+    assert [e.dn for e in resumed.read()] == ["cn=a", "cn=b"]
+    replay = ScriptedSource([begin("present"), present(U), present(V),
+                             refresh_done(b"cursor-3")])
+    opened_with = None
+    for event in replay.open(resumed.resume_cookie()):
+        opened_with = replay.opened_cookies[-1]
+        resumed.accept(event)
+    assert resumed.resume_cookie() == b"cursor-3"
+    print("POINTWISE_SCENARIO " + json.dumps({
+        "case_id": "sync-disconnect-resume",
+        "input": {"script": ["begin", "present", "checkpoint(stop)"],
+                  "replay": ["begin", "present", "present", "refresh_done"]},
+        "expected": {"cookie_after_stop": "cursor-2",
+                     "reopened_with": "cursor-2",
+                     "cookie_after_replay": "cursor-3",
+                     "directory": ["cn=a", "cn=b"]},
+        "actual": {"cookie_after_stop": committed_cookie.decode(),
+                   "reopened_with": opened_with.decode(),
+                   "cookie_after_replay": resumed.resume_cookie().decode(),
+                   "directory": [e.dn for e in resumed.read()]},
+        "downstream_expected": ["cn=a", "cn=b"],
+        "downstream_actual": [e.dn for e in resumed.read()],
+        "code_paths": ["directory/source/sync.py",
+                       "directory/source/sync_store.py",
+                       "directory/archive/schema.py"],
+        "oracle": "unfinished refresh is dropped; reopen uses committed directory and cookie"},
+        ensure_ascii=False))
+    db.close()
 
 
 def main():
@@ -60,6 +188,7 @@ def main():
                               "old_export_sha256":exported.digest,
                               "current_source":api.source_info(api.bind_snapshot()).source_id},
                              ensure_ascii=False,sort_keys=True))
+        sync_demo(folder)
 
 
 if __name__ == "__main__":
