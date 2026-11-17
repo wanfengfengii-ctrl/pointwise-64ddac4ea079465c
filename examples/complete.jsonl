@@ -1,0 +1,5 @@
+{"dn":"CN=1,OU=People","attributes":{"objectUUID":["00000000-0000-0000-0000-000000000001"],"cn":["Person 1"],"Tags":["z","é","é"," a "],"custom-field":[],"Description":["青岚"]},"department_path":["A","B"]}
+{"dn":"CN=2,OU=People","attributes":{"objectUUID":["00000000-0000-0000-0000-000000000002"],"cn":["Person 2"]},"department_path":["A","BC"]}
+{"dn":"CN=3,OU=People","attributes":{"objectUUID":["00000000-0000-0000-0000-000000000003"],"cn":["Person 3"]},"department_path":["AB"]}
+{"dn":"CN=4,OU=People","attributes":{"objectUUID":["00000000-0000-0000-0000-000000000004"],"cn":["Person 4"]},"department_path":null}
+{"dn":"CN=5,OU=People","attributes":{"objectUUID":["00000000-0000-0000-0000-000000000005"],"cn":["Person 5"]},"department_path":["A","B","C"]}
